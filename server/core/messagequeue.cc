@@ -175,8 +175,43 @@ bool MessageQueue::post(const Message& message) const
     ss_dassert(m_pWorker);
     if (m_pWorker)
     {
-        ssize_t n = write(m_write_fd, &message, sizeof(message));
-        rv = (n == sizeof(message));
+        /**
+         * This is a stopgap measure to solve MXS-1983. By retrying a limited
+         * number of times before giving up, the success rate for posted messages
+         * under heavy load increases significantly.
+         */
+        int fast = 0;
+        int slow = 0;
+        const int fast_size = 100;
+        const int slow_limit = 3;
+        ssize_t n;
+
+        while (true)
+        {
+            n = write(m_write_fd, &message, sizeof(message));
+            rv = (n == sizeof(message));
+
+            if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            {
+                if (++fast > fast_size)
+                {
+                    fast = 0;
+
+                    if (++slow >= slow_limit)
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        sleep(1);
+                    }
+                }
+            }
+            else
+            {
+                break;
+            }
+        }
 
         if (n == -1)
         {
