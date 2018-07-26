@@ -20,6 +20,7 @@
 #include <ctype.h>
 #include <netdb.h>
 #include <stdio.h>
+#include <mysql.h>
 
 #include <maxscale/alloc.h>
 #include <maxscale/dcb.h>
@@ -36,6 +37,9 @@
 /** Don't include the root user */
 #define USERS_QUERY_NO_ROOT " AND user.user NOT IN ('root')"
 
+/** Fetch a user in particular */
+#define USERS_QUERY_SINGLE_USER " AND u.user = '%s'"
+
 /** Normal password column name */
 #define MYSQL_PASSWORD "password"
 
@@ -44,11 +48,13 @@
 
 #define NEW_LOAD_DBUSERS_QUERY "SELECT u.user, u.host, d.db, u.select_priv, u.%s \
     FROM mysql.user AS u LEFT JOIN mysql.db AS d \
-    ON (u.user = d.user AND u.host = d.host) WHERE u.plugin IN ('', 'mysql_native_password') %s \
+    ON (u.user = d.user AND u.host = d.host) \
+    WHERE u.plugin IN ('', 'mysql_native_password') %s %s \
     UNION \
     SELECT u.user, u.host, t.db, u.select_priv, u.%s \
     FROM mysql.user AS u LEFT JOIN mysql.tables_priv AS t \
-    ON (u.user = t.user AND u.host = t.host) WHERE u.plugin IN ('', 'mysql_native_password') %s"
+    ON (u.user = t.user AND u.host = t.host) \
+    WHERE u.plugin IN ('', 'mysql_native_password') %s %s"
 
  // Query used with MariaDB 10.1 and newer, supports roles
 const char* mariadb_users_query =
@@ -95,15 +101,17 @@ const char* mariadb_users_query =
     // We only care about users that have a default role assigned
     "WHERE t.default_role = u.user %s;";
 
-static int get_users(SERV_LISTENER *listener, bool skip_local);
+static int get_users(SERV_LISTENER *listener, bool skip_local, const char *single_user);
 static MYSQL *gw_mysql_init(void);
 static int gw_mysql_set_timeouts(MYSQL* handle);
 static char *mysql_format_user_entry(void *data);
 static bool get_hostname(DCB *dcb, char *client_hostname, size_t size);
 
-static char* get_mariadb_users_query(bool include_root)
+static char* get_mariadb_users_query(bool include_root, const char *single_user_cond)
 {
     const char *root = include_root ? "" : " AND t.user NOT IN ('root')";
+
+    //TODO: append single_user_cond
 
     size_t n_bytes = snprintf(NULL, 0, mariadb_users_query, root, root);
     char *rval = MXS_MALLOC(n_bytes + 1);
@@ -113,11 +121,23 @@ static char* get_mariadb_users_query(bool include_root)
     return rval;
 }
 
-static char* get_users_query(const char *server_version, bool include_root, bool is_mariadb)
+static char* get_users_query(const char *server_version, bool include_root,
+                             const char *single_user, bool is_mariadb)
 {
+    char *single_user_cond = "";
+
+    if (single_user)
+    {
+        size_t cond_bytes = snprintf(NULL, 0, USERS_QUERY_SINGLE_USER, single_user);
+        single_user_cond = MXS_MALLOC(cond_bytes + 1);
+        snprintf(single_user_cond, cond_bytes + 1, USERS_QUERY_SINGLE_USER, single_user);
+    }
+
     if (is_mariadb) // 10.1.1 or newer, supports default roles
     {
-        return get_mariadb_users_query(include_root);
+        char *ret = get_mariadb_users_query(include_root, single_user_cond);
+        MXS_FREE(single_user_cond);
+        return ret;
     }
 
     // Either an older MariaDB version or a MySQL variant, use the legacy query
@@ -125,20 +145,35 @@ static char* get_users_query(const char *server_version, bool include_root, bool
                            ? MYSQL57_PASSWORD : MYSQL_PASSWORD;
     const char *with_root = include_root ? "" : " AND u.user NOT IN ('root')";
 
-    size_t n_bytes = snprintf(NULL, 0, NEW_LOAD_DBUSERS_QUERY, password, with_root, password, with_root);
+    size_t n_bytes = snprintf(NULL, 0, NEW_LOAD_DBUSERS_QUERY,
+                              password,
+                              with_root,
+                              single_user_cond,
+                              password,
+                              with_root,
+                              single_user_cond);
     char *rval = MXS_MALLOC(n_bytes + 1);
 
     if (rval)
     {
-        snprintf(rval, n_bytes + 1, NEW_LOAD_DBUSERS_QUERY, password, with_root, password, with_root);
+        snprintf(rval, n_bytes + 1, NEW_LOAD_DBUSERS_QUERY,
+                 password,
+                 with_root,
+                 single_user_cond,
+                 password,
+                 with_root,
+                 single_user_cond
+                );
     }
+
+    MXS_FREE(single_user_cond);
 
     return rval;
 }
 
-int replace_mysql_users(SERV_LISTENER *listener, bool skip_local)
+int replace_mysql_users(SERV_LISTENER *listener, bool skip_local, const char *single_user)
 {
-    int i = get_users(listener, skip_local);
+    int i = get_users(listener, skip_local, single_user);
     return i;
 }
 
@@ -820,15 +855,28 @@ static bool roles_are_available(MYSQL* conn, SERVICE* service, SERVER* server)
     return rval;
 }
 
-int get_users_from_server(MYSQL *con, SERVER_REF *server_ref, SERVICE *service, SERV_LISTENER *listener)
+int get_users_from_server(MYSQL *con, SERVER_REF *server_ref, SERVICE *service, SERV_LISTENER *listener,
+                          const char *single_user)
 {
     if (server_ref->server->version_string[0] == 0)
     {
         mxs_mysql_set_server_version(con, server_ref->server);
     }
 
-    char *query = get_users_query(server_ref->server->version_string, service->enable_root,
+    char *single_user_cond = MXS_MALLOC(96);
+
+    if (single_user)
+    {
+        mysql_real_escape_string(con, single_user_cond,
+                                 single_user, strnlen(single_user, 48));
+    }
+
+    char *query = get_users_query(server_ref->server->version_string,
+                                  service->enable_root,
+                                  single_user_cond,
                                   roles_are_available(con, service, server_ref->server));
+
+    MXS_FREE(single_user_cond);
 
     MYSQL_AUTH *instance = (MYSQL_AUTH*)listener->auth_instance;
     sqlite3* handle = get_handle(instance);
@@ -913,11 +961,12 @@ int get_users_from_server(MYSQL *con, SERVER_REF *server_ref, SERVICE *service, 
  * Load the user/passwd form mysql.user table into the service users' hashtable
  * environment.
  *
- * @param service   The current service
- * @param users     The users table into which to load the users
+ * @param service     The current service
+ * @param skip_local  Whether or not to skip the local users lookup
+ * @param single_user If not null, only find the specified user name
  * @return          -1 on any error or the number of users inserted
  */
-static int get_users(SERV_LISTENER *listener, bool skip_local)
+static int get_users(SERV_LISTENER *listener, bool skip_local, const char *single_user)
 {
     char *service_user = NULL;
     char *service_passwd = NULL;
@@ -968,7 +1017,7 @@ static int get_users(SERV_LISTENER *listener, bool skip_local)
             else
             {
                 /** Successfully connected to a server */
-                int users = get_users_from_server(con, server, service, listener);
+                int users = get_users_from_server(con, server, service, listener, single_user);
 
                 if (users > total_users)
                 {

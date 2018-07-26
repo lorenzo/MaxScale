@@ -85,7 +85,7 @@ MXS_MODULE* MXS_CREATE_MODULE()
         mysql_auth_authenticate,          /* Authenticate user credentials */
         mysql_auth_free_client_data,      /* Free the client data held in DCB */
         NULL,                             /* Destroy entry point */
-        mysql_auth_load_users,            /* Load users from backend databases */
+        NULL,                             /* Don't load users from backend databases */
         mysql_auth_diagnostic,
         mysql_auth_diagnostic_json,
         mysql_auth_reauthenticate         /* Handle COM_CHANGE_USER */
@@ -289,7 +289,7 @@ mysql_auth_authenticate(DCB *dcb)
                                        protocol->scramble, sizeof(protocol->scramble));
 
         if (auth_ret != MXS_AUTH_SUCCEEDED &&
-            service_refresh_users(dcb->service) == 0)
+            replace_mysql_users(dcb->listener, true, client_data->user) > 0)
         {
             auth_ret = validate_mysql_user(instance, dcb, client_data,
                                            protocol->scramble, sizeof(protocol->scramble));
@@ -608,7 +608,7 @@ static int mysql_auth_load_users(SERV_LISTENER *port)
         first_load = true;
     }
 
-    int loaded = replace_mysql_users(port, first_load);
+    int loaded = replace_mysql_users(port, first_load, NULL);
     bool injected = false;
 
     if (loaded <= 0)
@@ -673,7 +673,7 @@ int mysql_auth_reauthenticate(DCB *dcb, const char *user,
     MYSQL_AUTH *instance = (MYSQL_AUTH*)dcb->listener->auth_instance;
     int rc = validate_mysql_user(instance, dcb, &temp, scramble, scramble_len);
 
-    if (rc != MXS_AUTH_SUCCEEDED && service_refresh_users(dcb->service) == 0)
+    if (rc != MXS_AUTH_SUCCEEDED && replace_mysql_users(dcb->listener, true, user) > 0)
     {
         rc = validate_mysql_user(instance, dcb, &temp, scramble, scramble_len);
     }
