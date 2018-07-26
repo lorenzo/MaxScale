@@ -362,6 +362,7 @@ serviceStartPort(SERVICE *service, SERV_LISTENER *port)
     {
         service->rate_limits[i].last = last;
         service->rate_limits[i].warned = warned;
+        service->rate_limits[i].reentrant = false;
     }
 
     if (port->listener->func.listen(port->listener, config_bind))
@@ -1710,21 +1711,32 @@ int service_refresh_users(SERVICE *service)
 
     MXS_CONFIG* config = config_get_global_options();
 
+    if (!service->rate_limits[self].warned)
+    {
+        ret = 0;
+    }
+
     /* Check if refresh rate limit has been exceeded */
     if (now < service->rate_limits[self].last + config->users_refresh_time)
     {
-        if (!service->rate_limits[self].warned)
+        if (service->rate_limits[self].reentrant && !service->rate_limits[self].warned)
         {
             MXS_WARNING("[%s] Refresh rate limit (once every %ld seconds) exceeded for "
                         "load of users' table.",
                         service->name, config->users_refresh_time);
             service->rate_limits[self].warned = true;
         }
+        if (service->rate_limits[self].reentrant)
+        {
+            ret = 1;
+        }
+        service->rate_limits[self].reentrant = true;
     }
     else
     {
         service->rate_limits[self].last = now;
         service->rate_limits[self].warned = false;
+        service->rate_limits[self].reentrant = false;
 
 
         ret = 0;
@@ -1764,6 +1776,27 @@ int service_refresh_users(SERVICE *service)
     }
 
     return ret;
+}
+
+void service_reset_rate_limit(SERVICE *service)
+{
+    ss_dassert(service);
+    int self = mxs_worker_get_current_id();
+
+    if ((service->capabilities & ACAP_TYPE_ASYNC) == 0)
+    {
+        spinlock_acquire(&service->spin);
+        // Use only one rate limitation for synchronous authenticators to keep
+        // rate limitations synchronous as well
+        self = 0;
+    }
+
+    service->rate_limits[self].reentrant = false;
+
+    if ((service->capabilities & ACAP_TYPE_ASYNC) == 0)
+    {
+        spinlock_release(&service->spin);
+    }
 }
 
 void service_add_parameters(SERVICE *service, const MXS_CONFIG_PARAMETER *param)

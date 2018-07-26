@@ -78,8 +78,9 @@ typedef struct
 */
 typedef struct
 {
-    time_t last;   /*<< When was the users loaded the last time. */
-    bool   warned; /**< Has it been warned that the limit has been exceeded. */
+    time_t last;      /*<< When was the users loaded the last time. */
+    bool   warned;    /**< Has it been warned that the limit has been exceeded. */
+    bool   reentrant; /**< Has the check been applied before. */
 } SERVICE_REFRESH_RATE;
 
 typedef struct server_ref_t
@@ -107,7 +108,7 @@ typedef struct server_ref_t
 
 /* Refresh rate limits for load users from database */
 #define USERS_REFRESH_TIME_DEFAULT   30 /* Allowed time interval (in seconds) after last update*/
-#define USERS_REFRESH_TIME_MIN       10 /* Minimum allowed time interval (in seconds)*/
+#define USERS_REFRESH_TIME_MIN       3 /* Minimum allowed time interval (in seconds)*/
 
 /** Default timeout values used by the connections which fetch user authentication data */
 #define DEFAULT_AUTH_CONNECT_TIMEOUT 3
@@ -298,6 +299,7 @@ int   serviceStripDbEsc(SERVICE* service, int action);
 int   serviceAuthAllServers(SERVICE *service, int action);
 void  serviceSetVersionString(SERVICE *service, const char* value);
 int   service_refresh_users(SERVICE *service);
+void  service_reset_rate_limit(SERVICE *service);
 
 /**
  * Diagnostics

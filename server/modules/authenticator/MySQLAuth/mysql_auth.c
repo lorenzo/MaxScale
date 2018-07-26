@@ -85,7 +85,7 @@ MXS_MODULE* MXS_CREATE_MODULE()
         mysql_auth_authenticate,          /* Authenticate user credentials */
         mysql_auth_free_client_data,      /* Free the client data held in DCB */
         NULL,                             /* Destroy entry point */
-        NULL,                             /* Don't load users from backend databases */
+        mysql_auth_load_users,            /* The load users function that always returns success */
         mysql_auth_diagnostic,
         mysql_auth_diagnostic_json,
         mysql_auth_reauthenticate         /* Handle COM_CHANGE_USER */
@@ -288,9 +288,10 @@ mysql_auth_authenticate(DCB *dcb)
         auth_ret = validate_mysql_user(instance, dcb, client_data,
                                        protocol->scramble, sizeof(protocol->scramble));
 
-        if (auth_ret != MXS_AUTH_SUCCEEDED &&
+        if (auth_ret != MXS_AUTH_SUCCEEDED && service_refresh_users(dcb->service) == 0 &&
             replace_mysql_users(dcb->listener, true, client_data->user) > 0)
         {
+            service_reset_rate_limit(dcb->service);
             auth_ret = validate_mysql_user(instance, dcb, client_data,
                                            protocol->scramble, sizeof(protocol->scramble));
         }
@@ -583,77 +584,16 @@ static bool service_has_servers(SERVICE* service)
 /**
  * @brief Load MySQL authentication users
  *
- * This function loads MySQL users from the backend database.
+ * This function alwways returns success, and it is used so that
+ * we can rate-limit the lazy loading of users in case something
+ * goes wrong.
  *
  * @param port Listener definition
- * @return MXS_AUTH_LOADUSERS_OK on success, MXS_AUTH_LOADUSERS_ERROR and
- * MXS_AUTH_LOADUSERS_FATAL on fatal error
+ * @return MXS_AUTH_LOADUSERS_OK
  */
 static int mysql_auth_load_users(SERV_LISTENER *port)
 {
-    int rc = MXS_AUTH_LOADUSERS_OK;
-    SERVICE *service = port->listener->service;
-    MYSQL_AUTH *instance = (MYSQL_AUTH*)port->auth_instance;
-    bool first_load = false;
-
-    if (should_check_permissions(instance))
-    {
-        if (!check_service_permissions(port->service))
-        {
-            return MXS_AUTH_LOADUSERS_FATAL;
-        }
-
-        // Permissions are OK, no need to check them again
-        instance->check_permissions = false;
-        first_load = true;
-    }
-
-    int loaded = replace_mysql_users(port, first_load, NULL);
-    bool injected = false;
-
-    if (loaded <= 0)
-    {
-        if (loaded < 0)
-        {
-            MXS_ERROR("[%s] Unable to load users for listener %s listening at [%s]:%d.", service->name,
-                      port->name, port->address ? port->address : "::", port->port);
-        }
-
-        if (instance->inject_service_user)
-        {
-            /** Inject the service user as a 'backup' user that's available
-             * if loading of the users fails */
-            if (!add_service_user(port))
-            {
-                MXS_ERROR("[%s] Failed to inject service user.", port->service->name);
-            }
-            else
-            {
-                injected = true;
-            }
-        }
-    }
-
-    if (injected)
-    {
-        if (service_has_servers(service))
-        {
-            MXS_NOTICE("[%s] No users were loaded but 'inject_service_user' is enabled. "
-                       "Enabling service credentials for authentication until "
-                       "database users have been successfully loaded.", service->name);
-        }
-    }
-    else if (loaded == 0 && !first_load)
-    {
-        MXS_WARNING("[%s]: failed to load any user information. Authentication"
-                    " will probably fail as a result.", service->name);
-    }
-    else if (loaded > 0 && first_load)
-    {
-        MXS_NOTICE("[%s] Loaded %d MySQL users for listener %s.", service->name, loaded, port->name);
-    }
-
-    return rc;
+    return MXS_AUTH_LOADUSERS_OK;
 }
 
 int mysql_auth_reauthenticate(DCB *dcb, const char *user,
@@ -673,8 +613,10 @@ int mysql_auth_reauthenticate(DCB *dcb, const char *user,
     MYSQL_AUTH *instance = (MYSQL_AUTH*)dcb->listener->auth_instance;
     int rc = validate_mysql_user(instance, dcb, &temp, scramble, scramble_len);
 
-    if (rc != MXS_AUTH_SUCCEEDED && replace_mysql_users(dcb->listener, true, user) > 0)
+    if (rc != MXS_AUTH_SUCCEEDED && service_refresh_users(dcb->service) == 0 &&
+	      replace_mysql_users(dcb->listener, true, user) > 0)
     {
+        service_reset_rate_limit(dcb->service);
         rc = validate_mysql_user(instance, dcb, &temp, scramble, scramble_len);
     }
 
