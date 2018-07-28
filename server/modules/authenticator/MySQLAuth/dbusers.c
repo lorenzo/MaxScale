@@ -101,7 +101,6 @@ const char* mariadb_users_query =
     // We only care about users that have a default role assigned
     "WHERE t.default_role = u.user %s;";
 
-static int get_users(SERV_LISTENER *listener, bool skip_local, const char *single_user);
 static MYSQL *gw_mysql_init(void);
 static int gw_mysql_set_timeouts(MYSQL* handle);
 static char *mysql_format_user_entry(void *data);
@@ -169,12 +168,6 @@ static char* get_users_query(const char *server_version, bool include_root,
     MXS_FREE(single_user_cond);
 
     return rval;
-}
-
-int replace_mysql_users(SERV_LISTENER *listener, bool skip_local, const char *single_user)
-{
-    int i = get_users(listener, skip_local, single_user);
-    return i;
 }
 
 static bool check_password(const char *output, uint8_t *token, size_t token_len,
@@ -966,7 +959,7 @@ int get_users_from_server(MYSQL *con, SERVER_REF *server_ref, SERVICE *service, 
  * @param single_user If not null, only find the specified user name
  * @return          -1 on any error or the number of users inserted
  */
-static int get_users(SERV_LISTENER *listener, bool skip_local, const char *single_user)
+int get_users(SERV_LISTENER *listener, bool skip_local, const char *single_user)
 {
     char *service_user = NULL;
     char *service_passwd = NULL;
@@ -983,11 +976,6 @@ static int get_users(SERV_LISTENER *listener, bool skip_local, const char *singl
     {
         return -1;
     }
-
-    /** Delete the old users */
-    MYSQL_AUTH *instance = (MYSQL_AUTH*)listener->auth_instance;
-    sqlite3* handle = get_handle(instance);
-    delete_mysql_users(handle);
 
     SERVER_REF *server = service->dbref;
     int total_users = -1;

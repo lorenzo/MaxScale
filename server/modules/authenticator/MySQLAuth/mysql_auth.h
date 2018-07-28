@@ -186,7 +186,8 @@ bool dbusers_load(sqlite3 *handle, const char *filename);
 bool dbusers_save(sqlite3 *src, const char *filename);
 
 /**
- * Reload and replace the currently loaded database users
+ * Reload the users database without deleting the previous ones. This is useful
+ * when loading single users.
  *
  * @param service     The current service
  * @param skip_local  Skip loading of users on local MaxScale services
@@ -194,7 +195,7 @@ bool dbusers_save(sqlite3 *src, const char *filename);
  *
  * @return -1 on any error or the number of users inserted (0 means no users at all)
  */
-int replace_mysql_users(SERV_LISTENER *listener, bool skip_local, const char *single_user);
+int get_users(SERV_LISTENER *listener, bool skip_local, const char *single_user);
 
 /**
  * @brief Verify the user has access to the database

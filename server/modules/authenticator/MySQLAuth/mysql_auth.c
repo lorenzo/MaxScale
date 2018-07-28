@@ -289,7 +289,7 @@ mysql_auth_authenticate(DCB *dcb)
                                        protocol->scramble, sizeof(protocol->scramble));
 
         if (auth_ret != MXS_AUTH_SUCCEEDED && service_refresh_users(dcb->service) == 0 &&
-            replace_mysql_users(dcb->listener, true, client_data->user) > 0)
+            get_users(dcb->listener, true, client_data->user) > 0)
         {
             service_reset_rate_limit(dcb->service);
             auth_ret = validate_mysql_user(instance, dcb, client_data,
@@ -614,7 +614,7 @@ int mysql_auth_reauthenticate(DCB *dcb, const char *user,
     int rc = validate_mysql_user(instance, dcb, &temp, scramble, scramble_len);
 
     if (rc != MXS_AUTH_SUCCEEDED && service_refresh_users(dcb->service) == 0 &&
-	      replace_mysql_users(dcb->listener, true, user) > 0)
+	      get_users(dcb->listener, true, user) > 0)
     {
         service_reset_rate_limit(dcb->service);
         rc = validate_mysql_user(instance, dcb, &temp, scramble, scramble_len);
